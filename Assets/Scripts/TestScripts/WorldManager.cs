@@ -7,7 +7,7 @@ using System;
 
 public class WorldManager : MonoSingleton<WorldManager>
 {
-    public int worldSize = 10;
+    public int worldSize = 8;
     public Material tempMat;
 
     WorldData worldData;
@@ -20,15 +20,19 @@ public class WorldManager : MonoSingleton<WorldManager>
     {
         if (Input.GetKeyDown(KeyCode.Space))
         {
-            worldData.BuildMesh();
-            for (int i = 0; i < 6; i++)
-            {
-                GameObject go = new GameObject(i.ToString());
-                go.transform.parent = transform;
-                go.AddComponent<MeshFilter>().sharedMesh = worldData.faces[i].mesh;
-                go.AddComponent<MeshRenderer>().sharedMaterial = tempMat;
-            }
-            Debug.Log("Added meshes");
+            System.Diagnostics.Stopwatch watch = new System.Diagnostics.Stopwatch();
+            watch.Start();
+            worldData.BuildPlanet(true);
+            watch.Stop();
+            Debug.Log("Time multithreaded: "+ watch.ElapsedMilliseconds / 1000f);
+        }
+        else if (Input.GetKeyDown(KeyCode.R))
+        {
+            System.Diagnostics.Stopwatch watch = new System.Diagnostics.Stopwatch();
+            watch.Start();
+            worldData.BuildPlanet(false);
+            watch.Stop();
+            Debug.Log("Time singlethreaded: " + watch.ElapsedMilliseconds / 1000f);
         }
     }
     private void OnDrawGizmos()
@@ -44,14 +48,6 @@ public class WorldManager : MonoSingleton<WorldManager>
                     for (int y = 0; y < worldSize + 1; y++)
                     {
                         Gizmos.DrawSphere(face.baseVertexPos[x, y], 0.05f);
-                    }
-                }
-                Gizmos.color = Color.red;
-                for (int x = 0; x < worldSize; x++)
-                {
-                    for (int y = 0; y < worldSize; y++)
-                    {
-                        Gizmos.DrawSphere(face.tempPillarPos[x, y], 0.1f);
                     }
                 }
             }
