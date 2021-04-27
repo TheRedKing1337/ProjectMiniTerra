@@ -2,7 +2,11 @@
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using Unity.Burst;
+using Unity.Collections;
+using Unity.Jobs;
 using UnityEngine;
+using UnityEngine.Rendering;
 
 public class WorldData
 {
@@ -51,35 +55,60 @@ public class WorldData
         int chunksPerFace = width * width;
         int totalNumChunks = 6 * chunksPerFace;
 
-        ChunkMeshData[] meshData = new ChunkMeshData[totalNumChunks];
+        //ChunkMeshData[] meshData = new ChunkMeshData[totalNumChunks];
+        List<BuildChunkJob> chunkJobs = new List<BuildChunkJob>();
+        NativeArray<JobHandle> chunkJobHandles = new NativeArray<JobHandle>(totalNumChunks, Allocator.TempJob);
+
         int tempIndex = 0;
 
         if (!threaded)
         {
-            //for each face
-            for (int f = 0; f < 6; f++)
-            {
-                //for each chunk in face
-                for (int x = 0; x < worldSize / 8; x++)
-                {
-                    for (int y = 0; y < worldSize / 8; y++)
-                    {
-                        //calc vertex, tris and uvs
-                        meshData[tempIndex] = BuildChunk(f, x, y, false);
-                        tempIndex++;
-                    }
-                }
-            }
+            ////for each face
+            //for (int f = 0; f < 6; f++)
+            //{
+            //    //for each chunk in face
+            //    for (int x = 0; x < worldSize / 8; x++)
+            //    {
+            //        for (int y = 0; y < worldSize / 8; y++)
+            //        {
+            //            //calc vertex, tris and uvs
+            //            meshData[tempIndex] = BuildChunk(f, x, y, false);
+            //            tempIndex++;
+            //        }
+            //    }
+            //}
         }
         else
         {
-            Parallel.For(0, totalNumChunks, index =>
+            //Parallel.For(0, totalNumChunks, index =>
+            //{
+            //    int f = index / chunksPerFace;
+            //    int x = (index / width) % width;
+            //    int y = index % width;
+            //    meshData[index] = BuildChunk(f, x, y, false);
+            //});
+            for (int i = 0; i < totalNumChunks; i++)
             {
-                int f = index / chunksPerFace;
-                int x = (index / width) % width;
-                int y = index % width;
-                meshData[index] = BuildChunk(f, x, y, false);
-            });
+                int f = i / chunksPerFace;
+                int x = (i / width) % width;
+                int y = i % width;
+                chunkJobs.Add(new BuildChunkJob()
+                {
+                    chunkHeightmap = GetChunkHeightmap(f, x, y),
+                    chunkBasePositions = GetChunkBasePositions(f, x, y),
+
+                    faceIndex = f,
+                    chunkX = x,
+                    chunkY = y,
+
+                    verts = new NativeArray<Vector3>(8 * 8 * 20, Allocator.TempJob),
+                    tris = new NativeArray<int>(8 * 8 * 18 * 3, Allocator.TempJob),
+                    uvs = new NativeArray<Vector2>(8 * 8 * 20, Allocator.TempJob)
+                });
+                JobHandle handle = chunkJobs[i].Schedule();
+                chunkJobHandles[i] = handle;
+            }
+            JobHandle.CompleteAll(chunkJobHandles);
         }
 
         //for each face
@@ -102,9 +131,19 @@ public class WorldData
                     {
                         chunk.mesh.Clear();
                     }
-                    chunk.mesh.vertices = meshData[tempIndex].verts;
-                    chunk.mesh.triangles = meshData[tempIndex].tris;
-                    chunk.mesh.uv = meshData[tempIndex].uvs;
+                    //chunk.mesh.vertices = meshData[tempIndex].verts;
+                    //chunk.mesh.triangles = meshData[tempIndex].tris;
+                    //chunk.mesh.uv = meshData[tempIndex].uvs;
+                    //chunk.mesh.SetVertices(chunkJobs[tempIndex].verts);
+                    var layout = new[]
+                    {
+                        new VertexAttributeDescriptor(VertexAttribute.Position, VertexAttributeFormat.Float32, 3)
+                    };
+                    chunk.mesh.SetVertexBufferParams(chunkJobs[tempIndex].verts.Length, layout);
+                    chunk.mesh.SetVertexBufferData(chunkJobs[tempIndex].verts, 0, 0, chunkJobs[tempIndex].verts.Length);
+                    chunk.mesh.SetTriangles(chunkJobs[tempIndex].tris.ToArray(), 0);
+                    chunk.mesh.SetUVs(0, chunkJobs[tempIndex].uvs);
+                    //chunk.mesh.SetNormals();
                     chunk.mesh.RecalculateNormals();
 
                     //create object and assign values to it
@@ -119,12 +158,51 @@ public class WorldData
                     {
                         chunk.go.GetComponent<MeshFilter>().sharedMesh = chunk.mesh;
                     }
+                    chunkJobs[tempIndex].chunkBasePositions.Dispose();
+                    chunkJobs[tempIndex].chunkHeightmap.Dispose();
+                    chunkJobs[tempIndex].tris.Dispose();
+                    chunkJobs[tempIndex].verts.Dispose();
+                    chunkJobs[tempIndex].uvs.Dispose();
                     tempIndex++;
                 }
             }
         }
 
+        chunkJobHandles.Dispose();
+
         return true;
+    }
+    private NativeArray<float> GetChunkHeightmap(int face, int chunkX, int chunkY)
+    {
+        NativeArray<float> heightmap = new NativeArray<float>(64, Allocator.TempJob);
+        chunkX *= 8;
+        chunkY *= 8;
+
+        for (int x = 0; x < 8; x++)
+        {
+            for (int y = 0; y < 8; y++)
+            {
+                heightmap[x * 8 + y] = faces[face].heightMap[chunkX + x, chunkY + y];
+            }
+        }
+
+        return heightmap;
+    }
+    private NativeArray<Vector3> GetChunkBasePositions(int face, int chunkX, int chunkY)
+    {
+        NativeArray<Vector3> basePositions = new NativeArray<Vector3>(81, Allocator.TempJob);
+        chunkX *= 8;
+        chunkY *= 8;
+
+        for (int x = 0; x < 9; x++)
+        {
+            for (int y = 0; y < 9; y++)
+            {
+                basePositions[x * 8 + y] = faces[face].baseVertexPos[chunkX + x, chunkY + y];
+            }
+        }
+
+        return basePositions;
     }
     public ChunkMeshData BuildChunk(int faceIndex, int chunkX, int chunkY, bool threaded)
     {
@@ -441,6 +519,176 @@ public class WorldData
         data.uvs = uvs;
 
         return data;
+    }
+
+    [BurstCompile]
+    struct BuildChunkJob : IJob
+    {
+        [ReadOnly] public NativeArray<float> chunkHeightmap;
+        [ReadOnly] public NativeArray<Vector3> chunkBasePositions;
+
+        [ReadOnly] public int faceIndex;
+        [ReadOnly] public int chunkX;
+        [ReadOnly] public int chunkY;
+
+        public NativeArray<Vector3> verts;
+        public NativeArray<int> tris;
+        public NativeArray<Vector2> uvs;
+
+        public void Execute()
+        {
+            //Init vars for for loop
+            int chunkSize = 8;
+
+            int xOffset = chunkX * 8;
+            int yOffset = chunkY * 8;
+            float uvStepSize = 1f / 16;
+
+            int vertIndex = 0;
+            int trisIndex = 0;
+
+            for (int x = 0; x < chunkSize; x++)
+            {
+                for (int y = 0; y < chunkSize; y++)
+                {
+                    //Get the position in the data array 
+                    //int xPos = x + xOffset;
+                    //int yPos = y + yOffset;
+
+                    //Set the top vertices
+                    float height = chunkHeightmap[x * chunkSize + y];
+                    verts[vertIndex] = chunkBasePositions[x * chunkSize + y] * height;
+                    verts[vertIndex + 1] = chunkBasePositions[x * chunkSize + y + 1] * height;
+                    verts[vertIndex + 2] = chunkBasePositions[x * chunkSize + y + chunkSize] * height;
+                    verts[vertIndex + 3] = chunkBasePositions[x * chunkSize + y + 1 + chunkSize] * height;
+
+                    //Set these values based on pillarType later, for now default to grass
+                    float topCornerX = uvStepSize * 2;
+                    float topCornerY = uvStepSize * 14;
+                    uvs[vertIndex] = new Vector2(topCornerX, topCornerY);
+                    uvs[vertIndex + 1] = new Vector2(topCornerX + uvStepSize, topCornerY);
+                    uvs[vertIndex + 2] = new Vector2(topCornerX, topCornerY - uvStepSize);
+                    uvs[vertIndex + 3] = new Vector2(topCornerX + uvStepSize, topCornerY - uvStepSize);
+
+                    //Set the middle vertices, double all because uvs
+                    height = (chunkHeightmap[x * chunkSize + y] - 1);
+                    verts[vertIndex + 4] = chunkBasePositions[x * chunkSize + y] * height;
+                    verts[vertIndex + 5] = chunkBasePositions[x * chunkSize + y] * height;
+                    verts[vertIndex + 6] = chunkBasePositions[x * chunkSize + y + 1] * height;
+                    verts[vertIndex + 7] = chunkBasePositions[x * chunkSize + y + 1] * height;
+                    verts[vertIndex + 8] = chunkBasePositions[x * chunkSize + y + 1 + chunkSize] * height;
+                    verts[vertIndex + 9] = chunkBasePositions[x * chunkSize + y + 1 + chunkSize] * height;
+                    verts[vertIndex + 10] = chunkBasePositions[x * chunkSize + y + chunkSize] * height;
+                    verts[vertIndex + 11] = chunkBasePositions[x * chunkSize + y + chunkSize] * height;
+
+                    float doubleStep = uvStepSize * 2;
+                    uvs[vertIndex + 4] = new Vector2(topCornerX - uvStepSize, topCornerY);
+                    uvs[vertIndex + 5] = new Vector2(topCornerX, topCornerY + uvStepSize);
+                    uvs[vertIndex + 6] = new Vector2(topCornerX + uvStepSize, topCornerY + uvStepSize);
+                    uvs[vertIndex + 7] = new Vector2(topCornerX + doubleStep, topCornerY);
+                    uvs[vertIndex + 8] = new Vector2(topCornerX + doubleStep, topCornerY - uvStepSize);
+                    uvs[vertIndex + 9] = new Vector2(topCornerX + uvStepSize, topCornerY - doubleStep);
+                    uvs[vertIndex + 10] = new Vector2(topCornerX, topCornerY - doubleStep);
+                    uvs[vertIndex + 11] = new Vector2(topCornerX - uvStepSize, topCornerY - uvStepSize);
+
+                    //Set the bottom vertices, double all because uvs
+                    verts[vertIndex + 12] = chunkBasePositions[x * chunkSize + y] * height;
+                    verts[vertIndex + 13] = chunkBasePositions[x * chunkSize + y] * height;
+                    verts[vertIndex + 14] = chunkBasePositions[x * chunkSize + y + 1];
+                    verts[vertIndex + 15] = chunkBasePositions[x * chunkSize + y + 1];
+                    verts[vertIndex + 16] = chunkBasePositions[x * chunkSize + y + 1 + chunkSize];
+                    verts[vertIndex + 17] = chunkBasePositions[x * chunkSize + y + 1 + chunkSize];
+                    verts[vertIndex + 18] = chunkBasePositions[x * chunkSize + y + chunkSize];
+                    verts[vertIndex + 19] = chunkBasePositions[x * chunkSize + y + chunkSize];
+
+                    uvStepSize *= 2;
+                    doubleStep *= 2;
+                    uvs[vertIndex + 12] = new Vector2(topCornerX - uvStepSize, topCornerY);
+                    uvs[vertIndex + 13] = new Vector2(topCornerX, topCornerY + uvStepSize);
+                    uvs[vertIndex + 14] = new Vector2(topCornerX + uvStepSize, topCornerY + uvStepSize);
+                    uvs[vertIndex + 15] = new Vector2(topCornerX + doubleStep, topCornerY);
+                    uvs[vertIndex + 16] = new Vector2(topCornerX + doubleStep, topCornerY - uvStepSize);
+                    uvs[vertIndex + 17] = new Vector2(topCornerX + uvStepSize, topCornerY - doubleStep);
+                    uvs[vertIndex + 18] = new Vector2(topCornerX, topCornerY - doubleStep);
+                    uvs[vertIndex + 19] = new Vector2(topCornerX - uvStepSize, topCornerY - uvStepSize);
+                    uvStepSize *= 0.5f;
+
+                    //Set the top face
+                    tris[trisIndex] = vertIndex;
+                    tris[trisIndex + 1] = vertIndex + 1;
+                    tris[trisIndex + 2] = vertIndex + 2;
+                    tris[trisIndex + 3] = vertIndex + 1;
+                    tris[trisIndex + 4] = vertIndex + 3;
+                    tris[trisIndex + 5] = vertIndex + 2;
+
+                    trisIndex += 6;
+
+                    //Set the side faces, once for top sides, once for sides that go to world center
+
+                    //Back side
+                    tris[trisIndex] = vertIndex;
+                    tris[trisIndex + 1] = vertIndex + 5;
+                    tris[trisIndex + 2] = vertIndex + 6;
+                    tris[trisIndex + 3] = vertIndex + 1;
+                    tris[trisIndex + 4] = vertIndex;
+                    tris[trisIndex + 5] = vertIndex + 6;
+                    //Right side
+                    tris[trisIndex + 6] = vertIndex + 1;
+                    tris[trisIndex + 7] = vertIndex + 7;
+                    tris[trisIndex + 8] = vertIndex + 8;
+                    tris[trisIndex + 9] = vertIndex + 3;
+                    tris[trisIndex + 10] = vertIndex + 1;
+                    tris[trisIndex + 11] = vertIndex + 8;
+                    //Front side
+                    tris[trisIndex + 12] = vertIndex + 3;
+                    tris[trisIndex + 13] = vertIndex + 9;
+                    tris[trisIndex + 14] = vertIndex + 10;
+                    tris[trisIndex + 15] = vertIndex + 2;
+                    tris[trisIndex + 16] = vertIndex + 3;
+                    tris[trisIndex + 17] = vertIndex + 10;
+                    //Left side
+                    tris[trisIndex + 18] = vertIndex + 2;
+                    tris[trisIndex + 19] = vertIndex + 11;
+                    tris[trisIndex + 20] = vertIndex + 4;
+                    tris[trisIndex + 21] = vertIndex;
+                    tris[trisIndex + 22] = vertIndex + 2;
+                    tris[trisIndex + 23] = vertIndex + 4;
+
+                    //Bottom side faces
+                    //Back side
+                    tris[trisIndex + 24] = vertIndex + 5;
+                    tris[trisIndex + 25] = vertIndex + 13;
+                    tris[trisIndex + 26] = vertIndex + 14;
+                    tris[trisIndex + 27] = vertIndex + 6;
+                    tris[trisIndex + 28] = vertIndex + 5;
+                    tris[trisIndex + 29] = vertIndex + 14;
+                    //Right side
+                    tris[trisIndex + 30] = vertIndex + 7;
+                    tris[trisIndex + 31] = vertIndex + 15;
+                    tris[trisIndex + 32] = vertIndex + 16;
+                    tris[trisIndex + 33] = vertIndex + 8;
+                    tris[trisIndex + 34] = vertIndex + 7;
+                    tris[trisIndex + 35] = vertIndex + 16;
+                    //Front side
+                    tris[trisIndex + 36] = vertIndex + 9;
+                    tris[trisIndex + 37] = vertIndex + 17;
+                    tris[trisIndex + 38] = vertIndex + 18;
+                    tris[trisIndex + 39] = vertIndex + 10;
+                    tris[trisIndex + 40] = vertIndex + 9;
+                    tris[trisIndex + 41] = vertIndex + 18;
+                    //Left side
+                    tris[trisIndex + 42] = vertIndex + 11;
+                    tris[trisIndex + 43] = vertIndex + 19;
+                    tris[trisIndex + 44] = vertIndex + 12;
+                    tris[trisIndex + 45] = vertIndex + 4;
+                    tris[trisIndex + 46] = vertIndex + 11;
+                    tris[trisIndex + 47] = vertIndex + 12;
+
+                    vertIndex += 20;
+                    trisIndex += 48;
+                }
+            }
+        }
     }
 }
 public class PlanetChunk
