@@ -4,7 +4,6 @@ using System.Diagnostics;
 using Unity.Burst;
 using Unity.Collections;
 using Unity.Jobs;
-using Unity.Mathematics;
 using UnityEngine;
 
 public class InstancedPillarPlanet : MonoBehaviour
@@ -57,32 +56,34 @@ public class InstancedPillarPlanet : MonoBehaviour
         argsBuffer = new ComputeBuffer(1, args.Length * sizeof(uint), ComputeBufferType.IndirectArguments);
         argsBuffer.SetData(args);
 
-        CalculatePositionsJob calculatePositionsJob = new CalculatePositionsJob
-        {
-            population = population,
-            faceWidth = this.faceWidth,
-            planetScale = this.planetScale,
+        //Job to calculate the positions of the pillars
+        //CalculatePositionsJob calculatePositionsJob = new CalculatePositionsJob
+        //{
+        //    population = population,
+        //    faceWidth = this.faceWidth,
+        //    planetScale = this.planetScale,
 
-            positions = new NativeArray<Vector3>(population, Allocator.TempJob)
-        };
-        JobHandle jobHandle = calculatePositionsJob.Schedule();
-        jobHandle.Complete();
+        //    positions = new NativeArray<Vector3>(population, Allocator.TempJob)
+        //};
+        //JobHandle jobHandle = calculatePositionsJob.Schedule();
+        //jobHandle.Complete();
 
         // Initialize buffer with the given population.
         MeshProperties[] properties = new MeshProperties[population];
         for (int i = 0; i < population; i++)
         {
             MeshProperties props = new MeshProperties();
-            Vector3 position = calculatePositionsJob.positions[i];
+            //Vector3 position = calculatePositionsJob.positions[i];
+            Vector3 position = GetPillarPosition(i);
             Quaternion rotation = GetPillarRotation(position);
             Vector3 scale = Vector3.one / 100;
 
             props.mat = Matrix4x4.TRS(position, rotation, scale);
-            props.color = Color.Lerp(Color.red, Color.blue, UnityEngine.Random.value);
+            props.color = Color.Lerp(Color.red, Color.blue, Random.value);
 
             properties[i] = props;
         }
-        calculatePositionsJob.positions.Dispose();
+        //calculatePositionsJob.positions.Dispose();
 
         meshPropertiesBuffer = new ComputeBuffer(population, MeshProperties.Size());
         meshPropertiesBuffer.SetData(properties);
@@ -144,36 +145,38 @@ public class InstancedPillarPlanet : MonoBehaviour
 
         public NativeArray<Vector3> positions;
         public void Execute()
-        {
+        {           
             for (int i = 0; i < population; i++)
             {
-                float3 localUp = Vector3.zero;
-                int faceIndex = (int)math.floor(i / (faceWidth * faceWidth));
+                Vector3 localUp = Vector3.zero;
+                int faceIndex = Mathf.FloorToInt(i / (faceWidth * faceWidth));
                 switch (faceIndex)
                 {
-                    case 0: localUp = new float3(0, 1, 0); break;
-                    case 1: localUp = new float3(0, 0, -1); break;
-                    case 2: localUp = new float3(1, 0, 0); break;
-                    case 3: localUp = new float3(-1, 0, 0); break;
-                    case 4: localUp = new float3(0, 0, 1); break;
-                    case 5: localUp = new float3(0, -1, 0); break;
+                    case 0: localUp = Vector3.up; break;
+                    case 1: localUp = Vector3.back; break;
+                    case 2: localUp = Vector3.right; break;
+                    case 3: localUp = Vector3.left; break;
+                    case 4: localUp = Vector3.forward; break;
+                    case 5: localUp = Vector3.down; break;
                 }
 
-                float3 axisA = new float3(localUp.y, localUp.z, localUp.x);
-                float3 axisB = math.cross(localUp, axisA);
+                Vector3 axisA = new Vector3(localUp.y, localUp.z, localUp.x);
+                Vector3 axisB = Vector3.Cross(localUp, axisA);
 
                 int localIndex = i % (faceWidth * faceWidth);
                 int x = localIndex % faceWidth;
-                int y = (int)math.floor(localIndex / faceWidth);
-                float2 percent = new float2(x, y) / (faceWidth);
-                float3 pointOnUnitCube = localUp + (percent.x - 0.5f) * 2 * axisA + (percent.y - 0.5f) * 2 * axisB;
+                int y = Mathf.FloorToInt(localIndex / faceWidth);
+                Vector2 percent = new Vector2(x, y) / (faceWidth);
+                Vector3 pointOnUnitCube = localUp + (percent.x - 0.5f) * 2 * axisA + (percent.y - 0.5f) * 2 * axisB;
 
-                float3 squared = pointOnUnitCube * pointOnUnitCube;
+                float x2 = pointOnUnitCube.x * pointOnUnitCube.x;
+                float y2 = pointOnUnitCube.y * pointOnUnitCube.y;
+                float z2 = pointOnUnitCube.z * pointOnUnitCube.z;
 
                 Vector3 pillarPosition;
-                pillarPosition.x = pointOnUnitCube.x * math.sqrt(1f - squared.y / 2f - squared.z / 2f + squared.y * squared.z / 3f);
-                pillarPosition.y = pointOnUnitCube.y * math.sqrt(1f - squared.x / 2f - squared.z / 2f + squared.x * squared.z / 3f);
-                pillarPosition.z = pointOnUnitCube.z * math.sqrt(1f - squared.x / 2f - squared.y / 2f + squared.x * squared.y / 3f);
+                pillarPosition.x = pointOnUnitCube.x * Mathf.Sqrt(1f - y2 / 2f - z2 / 2f + y2 * z2 / 3f);
+                pillarPosition.y = pointOnUnitCube.y * Mathf.Sqrt(1f - x2 / 2f - z2 / 2f + x2 * z2 / 3f);
+                pillarPosition.z = pointOnUnitCube.z * Mathf.Sqrt(1f - x2 / 2f - y2 / 2f + x2 * y2 / 3f);
 
                 positions[i] = pillarPosition * planetScale;
             }
