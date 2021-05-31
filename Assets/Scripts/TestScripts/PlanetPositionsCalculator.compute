@@ -1,0 +1,198 @@
+﻿#pragma kernel CSMain
+
+struct MeshProperties {
+	float4x4 mat;
+	float4 color;
+};
+
+RWStructuredBuffer<MeshProperties> _Properties;
+float3 _CenterPosition;
+float _PlanetScale;
+uint _FaceWidth;
+
+// We used to just be able to use (1, 1, 1) threads for whatever population (not sure the old limit), but a Unity update
+// imposed a thread limit of 65535.  Now, to populations above that, we need to be more granular with our threads.
+float4 q_look_at(float3 forward, float3 up)
+{
+	float3 right = normalize(cross(forward, up));
+	up = normalize(cross(forward, right));
+
+	float m00 = right.x;
+	float m01 = right.y;
+	float m02 = right.z;
+	float m10 = up.x;
+	float m11 = up.y;
+	float m12 = up.z;
+	float m20 = forward.x;
+	float m21 = forward.y;
+	float m22 = forward.z;
+
+	float num8 = (m00 + m11) + m22;
+	float4 q = float4(0, 0, 0, 1);
+	if (num8 > 0.0)
+	{
+		float num = sqrt(num8 + 1.0);
+		q.w = num * 0.5;
+		num = 0.5 / num;
+		q.x = (m12 - m21) * num;
+		q.y = (m20 - m02) * num;
+		q.z = (m01 - m10) * num;
+		return q;
+	}
+
+	if ((m00 >= m11) && (m00 >= m22))
+	{
+		float num7 = sqrt(((1.0 + m00) - m11) - m22);
+		float num4 = 0.5 / num7;
+		q.x = 0.5 * num7;
+		q.y = (m01 + m10) * num4;
+		q.z = (m02 + m20) * num4;
+		q.w = (m12 - m21) * num4;
+		return q;
+	}
+
+	if (m11 > m22)
+	{
+		float num6 = sqrt(((1.0 + m11) - m00) - m22);
+		float num3 = 0.5 / num6;
+		q.x = (m10 + m01) * num3;
+		q.y = 0.5 * num6;
+		q.z = (m21 + m12) * num3;
+		q.w = (m20 - m02) * num3;
+		return q;
+	}
+
+	float num5 = sqrt(((1.0 + m22) - m00) - m11);
+	float num2 = 0.5 / num5;
+	q.x = (m20 + m02) * num2;
+	q.y = (m21 + m12) * num2;
+	q.z = 0.5 * num5;
+	q.w = (m01 - m10) * num2;
+	return q;
+}
+[numthreads(64, 1, 1)]
+void CSMain(uint3 id : SV_DispatchThreadID) {
+	float3 localUp = float3(0, 0, 0);
+	uint faceIndex = floor(id.x / (_FaceWidth * _FaceWidth));
+	switch (faceIndex)
+	{
+	case 0:localUp = float3(0, 1, 0);
+		break;
+	case 1:localUp = float3(0, 0, -1);
+		break;
+	case 2:localUp = float3(1, 0, 0);
+		break;
+	case 3:localUp = float3(-1, 0, 0);
+		break;
+	case 4:localUp = float3(0, 0, 1);
+		break;
+	case 5:localUp = float3(0, -1, 0);
+		break;
+	default:
+		break;
+	}
+
+	float3 axisA = { localUp.y, localUp.z, localUp.x };
+	float3 axisB = cross(localUp, axisA);
+
+	uint localIndex = id.x % (_FaceWidth * _FaceWidth);
+	uint x = localIndex % _FaceWidth;
+	uint y = floor(localIndex / _FaceWidth);
+	float2 percent = float2(x, y) / (_FaceWidth - (float)1);
+	float3 pointOnUnitCube = localUp + (percent.x - 0.5f) * 2 * axisA + (percent.y - 0.5f) * 2 * axisB;
+
+	float x2 = pointOnUnitCube.x * pointOnUnitCube.x;
+	float y2 = pointOnUnitCube.y * pointOnUnitCube.y;
+	float z2 = pointOnUnitCube.z * pointOnUnitCube.z;
+
+	float3 position;
+	position.x = pointOnUnitCube.x * sqrt(1 - y2 / 2 - z2 / 2 + y2 * z2 / 3);
+	position.y = pointOnUnitCube.y * sqrt(1 - x2 / 2 - z2 / 2 + x2 * z2 / 3);
+	position.z = pointOnUnitCube.z * sqrt(1 - x2 / 2 - y2 / 2 + x2 * y2 / 3);
+
+	//Calc rotation
+	//float4 r = q_look_at(position, float3(0, 1, 0));
+	float3 F = normalize(_CenterPosition - position);   // lookAt
+	float3 R = normalize(cross(float3(0,1,0), F)); // sideaxis
+	float3 U = cross(F, R);                  // rotatedup
+
+	// note that R needed to be re-normalized
+	// since F and worldUp are not necessary perpendicular
+	// so must remove the sin(angle) factor of the cross-product
+	// same not true for U because dot(R, F) = 0
+
+	// adapted source
+	float4 r;
+	float trace = R.x + U.y + F.z;
+	if (trace > 0.0f)
+	{
+		float s = 0.5f / sqrt(trace + 1.0f);
+		r.w = 0.25f / s;
+		r.x = (U.z - F.y) * s;
+		r.y = (F.x - R.z) * s;
+		r.z = (R.y - U.x) * s;
+	}
+	else
+	{
+		if (R.x > U.y && R.x > F.z)
+		{
+			float s = 2.0f * sqrt(1.0f + R.x - U.y - F.z);
+			r.w = (U.z - F.y) / s;
+			r.x = 0.25f * s;
+			r.y = (U.x + R.y) / s;
+			r.z = (F.x + R.z) / s;
+		}
+		else if (U.y > F.z)
+		{
+			float s = 2.0f * sqrt(1.0f + U.y - R.x - F.z);
+			r.w = (F.x - R.z) / s;
+			r.x = (U.x + R.y) / s;
+			r.y = 0.25f * s;
+			r.z = (F.y + U.z) / s;
+		}
+		else
+		{
+			float s = 2.0f * sqrt(1.0f + F.z - R.x - U.y);
+			r.w = (R.y - U.x) / s;
+			r.x = (F.x + R.z) / s;
+			r.y = (F.y + U.z) / s;
+			r.z = 0.25f * s;
+		}
+	}
+	// rotation z
+	float4x4 mat_local_rz = {
+		cos(r.z), -sin(r.z), 0, 0,
+		 sin(r.z), cos(r.z), 0, 0,
+		0, 0, 1, 0,
+		0, 0, 0, 1
+	};
+	// rotation x
+	float4x4 mat_local_rx = {
+		1, 0, 0, 0,
+		0, cos(r.x), -sin(r.x), 0,
+		0, sin(r.x), cos(r.x), 0,
+		0, 0, 0, 1
+	};
+	// rotation y
+	float4x4 mat_local_ry = {
+		cos(r.y), 0, sin(r.y), 0,
+		0, 1, 0, 0,
+		-sin(r.y), 0, cos(r.y), 0,
+		0, 0, 0, 1
+	};
+	position = position * _PlanetScale;
+
+	float cubeSize = _PlanetScale / _FaceWidth;
+
+	// Create a new translation matrix which represents a move in a direction.
+	float4x4 translation = float4x4(
+		cubeSize, 0, 0, position.x,
+		0, cubeSize * 10, 0, position.y,
+		0, 0, cubeSize, position.z,
+		0, 0, 0, 1
+		);	
+
+
+	// Apply translation to existing matrix, which will be read in the shader.
+	_Properties[id.x].mat = mul(translation, mul(mat_local_ry, mul(mat_local_rx, mat_local_rz)));;
+}
