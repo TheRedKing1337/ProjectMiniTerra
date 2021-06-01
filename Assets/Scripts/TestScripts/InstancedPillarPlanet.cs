@@ -79,11 +79,12 @@ public class InstancedPillarPlanet : MonoBehaviour
             {
                 MeshProperties props = new MeshProperties();
                 //Vector3 position = calculatePositionsJob.positions[i];
-                Vector3 position = Vector3.zero;//Vector3.zero; // GetPillarPosition(i);
-                Quaternion rotation = Quaternion.identity;// Quaternion.identity; // GetPillarRotation(position);
-                Vector3 scale = Vector3.one / 100;
+                //Vector3 position = Vector3.zero;//Vector3.zero; // GetPillarPosition(i);
+                //Quaternion rotation = Quaternion.identity;// Quaternion.identity; // GetPillarRotation(position);
+                //Vector3 scale = Vector3.one / 100;
 
-                props.mat = Matrix4x4.TRS(position, rotation, scale);
+                //props.mat = Matrix4x4.TRS(position, rotation, scale);
+                props.mat = new Matrix4x4();
                 props.color = new Color(Random.value, Random.value, Random.value);
 
                 properties[i] = props;
@@ -99,6 +100,8 @@ public class InstancedPillarPlanet : MonoBehaviour
             compute.SetVector("_CenterPosition", transform.position);
             compute.SetFloat("_PlanetScale", planetScale);
             compute.SetInt("_FaceWidth", faceWidth);
+            Quaternion tempRot = Quaternion.Euler(0, 45, 0);
+           compute.SetFloats("_DebugQuaternion", tempRot.x, tempRot.y, tempRot.z, tempRot.w);
             compute.Dispatch(kernel, Mathf.CeilToInt(population / 64f), 1, 1);
         } else
         {
